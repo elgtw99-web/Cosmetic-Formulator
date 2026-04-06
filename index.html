@@ -607,11 +607,88 @@ tr:hover td { background:rgba(255,255,255,.02); }
   <div class="topbar">
     <div class="page-title">📄 配方開發報告</div>
     <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm" onclick="switchReportTab('formula')">⚗️ 配方報告</button>
+      <button class="btn btn-ghost btn-sm" onclick="switchReportTab('selling')">✨ 產品賣點</button>
       <button class="btn btn-gold btn-sm" onclick="exportReport()">📥 匯出 HTML</button>
     </div>
   </div>
   <div style="padding:24px;">
-    <div id="report-content"></div>
+    <!-- Tab: 配方報告 -->
+    <div id="report-tab-formula">
+      <div id="report-content"></div>
+    </div>
+    <!-- Tab: 產品賣點 -->
+    <div id="report-tab-selling" style="display:none;">
+      <div class="grid2" style="align-items:start;">
+        <!-- 左：設定 -->
+        <div>
+          <div class="card mb-16">
+            <div class="card-title">✨ 產品賣點設定</div>
+            <div class="field">
+              <div class="label">目標受眾</div>
+              <select class="select" id="sp-audience">
+                <option value="客戶業務簡報">客戶業務簡報（ODM/OEM 客戶）</option>
+                <option value="品牌行銷文案">品牌行銷文案（消費者）</option>
+                <option value="產品說明書">產品說明書（技術說明）</option>
+                <option value="社群媒體文案">社群媒體文案（IG/FB）</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="label">語言風格</div>
+              <select class="select" id="sp-tone">
+                <option value="專業技術">專業技術型（強調成分機制）</option>
+                <option value="時尚消費">時尚消費型（強調體驗感受）</option>
+                <option value="科學實證">科學實證型（強調數據佐證）</option>
+                <option value="自然純粹">自然純粹型（強調天然溯源）</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="label">主打賣點數量</div>
+              <select class="select" id="sp-count">
+                <option value="3">3 大賣點</option>
+                <option value="5" selected>5 大賣點</option>
+                <option value="7">7 大賣點</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="label">補充說明（可選）</div>
+              <textarea class="textarea" id="sp-extra" placeholder="例：強調歐盟原料、突出某特定成分、配合品牌故事方向..."></textarea>
+            </div>
+            <button class="btn btn-primary w-full" onclick="generateSellingPoints()" id="btn-gen-sp">
+              ✨ AI 生成產品賣點
+            </button>
+          </div>
+
+          <!-- 配方成分亮點速覽 -->
+          <div class="card">
+            <div class="card-title">📌 成分亮點速覽</div>
+            <div id="sp-ingredient-highlights" style="font-size:12px;color:var(--text3);">
+              請先在配方頁面建立配方
+            </div>
+          </div>
+        </div>
+
+        <!-- 右：賣點輸出 -->
+        <div>
+          <div class="card" style="min-height:500px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+              <div class="card-title" style="margin:0;">產品賣點文案</div>
+              <div style="display:flex;gap:6px;">
+                <button class="btn btn-ghost btn-sm" onclick="copySellingPoints()" id="btn-copy-sp" disabled>📋 複製</button>
+                <button class="btn btn-ghost btn-sm" onclick="exportSellingPoints()" id="btn-export-sp" disabled>📥 匯出</button>
+              </div>
+            </div>
+            <div id="sp-output" style="min-height:400px;font-size:13px;line-height:1.8;color:var(--text2);white-space:pre-wrap;">
+              <div style="color:var(--text3);padding:20px 0;text-align:center;">
+                設定好目標受眾與風格後，點擊「AI 生成產品賣點」<br>
+                AI 將根據配方中每項成分的功效亮點、作用機制與賣點文案，<br>
+                整合生成針對客戶說明用的完整產品賣點內容
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1295,7 +1372,7 @@ function nav(p) {
     if(x.getAttribute('onclick') && x.getAttribute('onclick').includes("'"+p+"'")) x.classList.add('active');
   });
   if(p==='formula') renderFormula();
-  if(p==='report') renderReport();
+  if(p==='report') { renderReport(); if(currentReportTab==='selling') renderIngredientHighlights(); }
   if(p==='ai' && currentAIMode==='modify') populateFormulaSelect();
 }
 
@@ -1708,7 +1785,7 @@ ${dbContext}
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens:2500,
         messages:[{ role:'user', content:prompt }] })
     });
@@ -1773,7 +1850,7 @@ ${dbContext}
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens:2000,
         messages:[{ role:'user', content:prompt }] })
     });
@@ -1863,6 +1940,197 @@ function scanFormula() {
   });
   html += '</table></div>';
   el.innerHTML = html;
+}
+
+// ── REPORT TABS ──────────────────────────────────────────────────────────────
+let currentReportTab = 'formula';
+function switchReportTab(tab) {
+  currentReportTab = tab;
+  document.getElementById('report-tab-formula').style.display = tab==='formula' ? '' : 'none';
+  document.getElementById('report-tab-selling').style.display = tab==='selling' ? '' : 'none';
+  if(tab==='selling') renderIngredientHighlights();
+}
+
+// ── SELLING POINTS ────────────────────────────────────────────────────────────
+let lastSellingPoints = '';
+
+function renderIngredientHighlights() {
+  const el = document.getElementById('sp-ingredient-highlights');
+  if(!formula.length) { el.innerHTML='<div style="color:var(--text3)">請先建立配方</div>'; return; }
+
+  // Match formula ingredients to DB and extract hi/mech/e1
+  const highlighted = [];
+  formula.forEach(f => {
+    const dbEntry = DB.find(d => d.id === f.id || d.z === f.name || d.b === f.name ||
+      (f.inci && d.i && d.i.toLowerCase().includes(f.inci.toLowerCase().split(' ')[0])));
+    if(dbEntry && (dbEntry.hi || dbEntry.mech || dbEntry.e1)) {
+      highlighted.push({ name: f.name, pct: f.pct, hi: dbEntry.hi, mech: dbEntry.mech,
+        e1: dbEntry.e1, e2: dbEntry.e2, note: dbEntry.note, src: dbEntry.src });
+    }
+  });
+
+  if(!highlighted.length) {
+    el.innerHTML = '<div style="color:var(--text3)">配方中的成分暫無詳細亮點資料（多為基礎輔劑）</div>';
+    return;
+  }
+
+  el.innerHTML = highlighted.map(h => `
+    <div style="padding:8px 0;border-bottom:1px solid var(--border);">
+      <div style="font-weight:600;color:var(--text);display:flex;justify-content:space-between;">
+        <span>${h.name}</span>
+        <span style="color:var(--accent);font-family:monospace;">${h.pct.toFixed(2)}%</span>
+      </div>
+      ${h.e1 ? `<div style="color:var(--green);margin-top:2px;">🎯 ${h.e1}${h.e2?' · '+h.e2:''}</div>` : ''}
+      ${h.hi ? `<div style="color:var(--text2);margin-top:3px;">✨ ${h.hi}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+async function generateSellingPoints() {
+  const apiKey = document.getElementById('api-key')?.value?.trim() ||
+    localStorage.getItem('elg_api_key') || '';
+  if(!apiKey) { alert('請先在 AI 助理頁面填入 Claude API Key'); return; }
+  if(!formula.length) { alert('請先建立配方'); return; }
+
+  const audience = document.getElementById('sp-audience').value;
+  const tone = document.getElementById('sp-tone').value;
+  const count = document.getElementById('sp-count').value;
+  const extra = document.getElementById('sp-extra').value;
+  const formulaName = document.getElementById('f-name').value || '未命名配方';
+  const formulaType = document.getElementById('f-type').value;
+  const fnote = document.getElementById('f-note').value;
+
+  // Build rich ingredient context with all highlight fields from DB
+  const ingDetails = formula.map(f => {
+    const d = DB.find(x => x.id===f.id || x.z===f.name ||
+      (f.inci && x.i && x.i.toLowerCase().includes(f.inci.toLowerCase().split(' ')[0])));
+    return {
+      name: f.name, pct: f.pct, inci: f.inci,
+      e1: d?.e1||'', e2: d?.e2||'', hi: d?.hi||'', mech: d?.mech||'',
+      note: d?.note||'', src: d?.src||''
+    };
+  });
+
+  // Separate active from base ingredients for better prompting
+  const activeIngs = ingDetails.filter(x => x.hi || x.mech || x.e1);
+  const baseIngs = ingDetails.filter(x => !x.hi && !x.mech && !x.e1);
+
+  const activeContext = activeIngs.map(x =>
+    `• ${x.name}（${x.pct.toFixed(2)}%）
+   功效：${x.e1}${x.e2?' / '+x.e2:''}
+   亮點：${x.hi||'—'}
+   機制：${x.mech||'—'}
+   備註：${x.note||'—'}
+   來源：${x.src||'—'}`
+  ).join('\n\n');
+
+  const baseContext = baseIngs.map(x => `${x.name}（${x.pct.toFixed(2)}%）`).join('、');
+
+  const prompt = `你是一位資深化妝品配方研發暨行銷顧問，擅長將技術配方轉化為打動客戶的產品賣點。
+
+【配方資訊】
+- 配方名稱：${formulaName}
+- 產品類型：${formulaType}
+- 配方目標：${fnote||'未填寫'}
+- 原料總數：${formula.length} 種
+
+【核心活性成分（含完整亮點資料）】
+${activeContext || '（配方以基礎輔劑為主）'}
+
+【基礎輔劑】
+${baseContext || '無'}
+
+【輸出要求】
+- 目標受眾：${audience}
+- 語言風格：${tone}
+- 賣點數量：${count} 大賣點
+- 補充說明：${extra||'無'}
+
+請生成一份完整的產品賣點文案，結構如下：
+
+**【產品定位】**
+（1-2句，點出這款產品的核心定位與差異化）
+
+**【${count} 大核心賣點】**
+（每個賣點包含：賣點標題、詳細說明、可引用的成分亮點或機制、對目標受眾的價值陳述）
+
+**【成分亮點總覽】**
+（針對配方中每個有亮點的核心成分，提供一段對客戶有說服力的介紹文字，包含：選用理由、功效機制、品牌故事或來源、可延伸的行銷方向）
+
+**【建議行銷方向】**
+（3-5個針對${audience}的具體行銷策略或口號建議）
+
+語氣請符合「${tone}」風格，確保內容對${audience}有說服力和吸引力。`;
+
+  const out = document.getElementById('sp-output');
+  out.innerHTML = `<div class="ai-thinking"><div class="dot-pulse"><span></span><span></span><span></span></div> AI 正在分析配方成分亮點，生成產品賣點文案...</div>`;
+  document.getElementById('btn-gen-sp').disabled = true;
+  document.getElementById('btn-copy-sp').disabled = true;
+  document.getElementById('btn-export-sp').disabled = true;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens:3000,
+        messages:[{ role:'user', content:prompt }] })
+    });
+    const data = await res.json();
+    if(data.error) throw new Error(data.error.message);
+    lastSellingPoints = data.content[0].text;
+    // Render with basic markdown
+    out.innerHTML = renderMarkdown(lastSellingPoints);
+    document.getElementById('btn-copy-sp').disabled = false;
+    document.getElementById('btn-export-sp').disabled = false;
+  } catch(e) {
+    out.innerHTML = `<span style="color:var(--red);">❌ API 錯誤：${e.message}</span>`;
+  }
+  document.getElementById('btn-gen-sp').disabled = false;
+}
+
+function renderMarkdown(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--text)">$1</strong>')
+    .replace(/^#{1,3} (.+)$/gm, '<div style="font-size:15px;font-weight:700;color:var(--accent);margin:16px 0 8px;">$1</div>')
+    .replace(/^• (.+)$/gm, '<div style="padding:2px 0 2px 14px;border-left:2px solid var(--accent);margin:4px 0;">$1</div>')
+    .replace(/^- (.+)$/gm, '<div style="padding:2px 0 2px 14px;color:var(--text2);">· $1</div>')
+    .replace(/\n{2,}/g, '</p><p style="margin:0 0 8px">')
+    .replace(/\n/g, '<br>');
+}
+
+function copySellingPoints() {
+  if(!lastSellingPoints) return;
+  navigator.clipboard.writeText(lastSellingPoints).then(() => {
+    const btn = document.getElementById('btn-copy-sp');
+    const orig = btn.textContent;
+    btn.textContent = '✅ 已複製';
+    setTimeout(() => btn.textContent = orig, 2000);
+  });
+}
+
+function exportSellingPoints() {
+  if(!lastSellingPoints) return;
+  const name = document.getElementById('f-name').value || '配方';
+  const audience = document.getElementById('sp-audience').value;
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>${name} — 產品賣點</title>
+    <style>
+      body{font-family:'Noto Sans TC',sans-serif;max-width:800px;margin:40px auto;padding:0 24px;color:#333;line-height:1.8;}
+      h1{color:#1a1a2e;border-bottom:3px solid #4f9cf9;padding-bottom:12px;}
+      strong{color:#1a1a2e;}
+      .meta{color:#666;font-size:13px;margin-bottom:32px;}
+      pre{white-space:pre-wrap;font-family:inherit;}
+    </style></head>
+    <body>
+      <h1>${name}</h1>
+      <div class="meta">產品賣點文案 ｜ 對象：${audience} ｜ 生成日期：${new Date().toLocaleDateString('zh-TW')}</div>
+      <pre>${lastSellingPoints}</pre>
+    </body></html>`;
+  const blob = new Blob([html], {type:'text/html;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name}_產品賣點.html`;
+  a.click();
 }
 
 // ── REPORT ──────────────────────────────────────────────────────────────────
