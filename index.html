@@ -210,6 +210,8 @@ tr:hover td { background:rgba(255,255,255,.02); }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
 <div class="app">
@@ -231,6 +233,11 @@ tr:hover td { background:rgba(255,255,255,.02); }
     <div class="nav-label">工具</div>
     <div class="nav-item" onclick="nav('regulation')"><span class="icon">⚖️</span>法規查詢</div>
     <div class="nav-item" onclick="nav('report')"><span class="icon">📄</span>配方報告</div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">樣品管理</div>
+    <div class="nav-item" onclick="nav('supplier-sample')"><span class="icon">📦</span>原料商寄樣</div>
+    <div class="nav-item" onclick="nav('formula-sample')"><span class="icon">🚚</span>打樣寄樣</div>
   </div>
   <div class="sidebar-stat">
     原料庫：<b id="stat-total">569</b> 筆<br>
@@ -1353,6 +1360,7 @@ let lastAIResult = '';
 
 // ── INIT ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  initFirebase();
   const today = new Date().toISOString().slice(0,10);
   document.getElementById('f-date').value = today;
   const saved = localStorage.getItem('elg_api_key');
@@ -1373,7 +1381,8 @@ function nav(p) {
   });
   if(p==='formula') renderFormula();
   if(p==='report') { renderReport(); if(currentReportTab==='selling') renderIngredientHighlights(); }
-  if(p==='ai' && currentAIMode==='modify') populateFormulaSelect();
+  if(p==='supplier-sample') loadSupplierSamples();
+  if(p==='formula-sample') loadFormulaSamples();
 }
 
 function updateStats() {
@@ -2211,6 +2220,718 @@ function exportReport() {
 // ── MODAL ──────────────────────────────────────────────────────────────────
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 window.onclick = e => { if(e.target.classList.contains('modal-overlay')) e.target.classList.remove('open'); };
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FIREBASE INIT
+// ══════════════════════════════════════════════════════════════════════════════
+// ⚠️ 請將以下替換成你的 Firebase 設定
+const FB_CONFIG = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+};
+let db = null;
+function initFirebase() {
+  if(typeof firebase === 'undefined' || FB_CONFIG.apiKey === 'YOUR_API_KEY') {
+    console.warn('Firebase 未設定，使用 localStorage 備援');
+    return false;
+  }
+  if(!firebase.apps.length) firebase.initializeApp(FB_CONFIG);
+  db = firebase.database();
+  return true;
+}
+
+// ── Generic Firebase helpers ──────────────────────────────────────────────────
+async function fbSet(path, data) {
+  if(db) { await db.ref(path).set(data); return true; }
+  localStorage.setItem('elg_' + path.replace(/\//g,'_'), JSON.stringify(data));
+  return true;
+}
+async function fbPush(path, data) {
+  if(db) { const ref = await db.ref(path).push(data); return ref.key; }
+  const arr = JSON.parse(localStorage.getItem('elg_' + path.replace(/\//g,'_')) || '[]');
+  const key = 'local_' + Date.now();
+  arr.push({...data, _key: key});
+  localStorage.setItem('elg_' + path.replace(/\//g,'_'), JSON.stringify(arr));
+  return key;
+}
+async function fbGet(path) {
+  if(db) { const snap = await db.ref(path).once('value'); return snap.val() || {}; }
+  const raw = localStorage.getItem('elg_' + path.replace(/\//g,'_'));
+  return raw ? JSON.parse(raw) : {};
+}
+async function fbUpdate(path, data) {
+  if(db) { await db.ref(path).update(data); return; }
+  const existing = JSON.parse(localStorage.getItem('elg_' + path.replace(/\//g,'_')) || '{}');
+  localStorage.setItem('elg_' + path.replace(/\//g,'_'), JSON.stringify({...existing,...data}));
+}
+async function fbRemove(path) {
+  if(db) { await db.ref(path).remove(); return; }
+  localStorage.removeItem('elg_' + path.replace(/\//g,'_'));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SUPPLIER SAMPLE PAGE（原料商寄樣記錄）
+// ══════════════════════════════════════════════════════════════════════════════
+let supplierSamples = [];
+let editingSSId = null;
+
+async function loadSupplierSamples() {
+  const data = await fbGet('supplier_samples');
+  supplierSamples = Object.entries(data).map(([k,v])=>({...v, _key:k}))
+    .sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  renderSSList();
+  updateSSStat();
+}
+
+function updateSSStat() {
+  const pending = supplierSamples.filter(x=>x.status==='待評估').length;
+  const done = supplierSamples.filter(x=>x.status==='已評估').length;
+  document.getElementById('ss-stat-total').textContent = supplierSamples.length;
+  document.getElementById('ss-stat-pending').textContent = pending;
+  document.getElementById('ss-stat-done').textContent = done;
+}
+
+function renderSSList(filter='') {
+  const tbody = document.getElementById('ss-tbody');
+  let list = supplierSamples;
+  if(filter) list = list.filter(x =>
+    x.supplierName?.includes(filter) || x.ingredientName?.includes(filter) ||
+    x.inci?.includes(filter) || x.status?.includes(filter));
+  if(!list.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">尚無寄樣記錄</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(s => `
+    <tr onclick="openSSDetail('${s._key}')" style="cursor:pointer;">
+      <td>${s.date||'—'}</td>
+      <td><b>${s.ingredientName||'—'}</b><div style="font-size:11px;color:var(--text3)">${s.inci||''}</div></td>
+      <td>${s.supplierName||'—'}</td>
+      <td><span class="tag ${tagColor(s.category)}">${s.category||'—'}</span></td>
+      <td><span class="tag ${statusColor(s.status)}">${s.status||'待收樣'}</span></td>
+      <td>${s.hasFile?'📎':''} ${s.hasPhoto?'📷':''}</td>
+      <td class="text-sm text-muted">${s.evaluator||'—'}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSSEdit('${s._key}')">編輯</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="event.stopPropagation();deleteSSRecord('${s._key}')">刪除</button>
+      </td>
+    </tr>`).join('');
+}
+
+function tagColor(c) {
+  return {FI:'tag-blue', AI:'tag-green', PR:'tag-red', CF:'tag-gold', SI:'tag-purple'}[c] || 'tag-gray';
+}
+function statusColor(s) {
+  return {待收樣:'tag-gray', 已收樣:'tag-blue', 待評估:'tag-gold', 已評估:'tag-green', 不採用:'tag-red'}[s] || 'tag-gray';
+}
+
+function openSSNew() {
+  editingSSId = null;
+  document.getElementById('ss-modal-title').textContent = '新增原料商寄樣記錄';
+  document.getElementById('ss-form').reset();
+  document.getElementById('ss-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('ss-preview-area').style.display = 'none';
+  document.getElementById('ss-files-list').innerHTML = '';
+  document.getElementById('modal-ss').classList.add('open');
+}
+
+function openSSEdit(key) {
+  const s = supplierSamples.find(x=>x._key===key);
+  if(!s) return;
+  editingSSId = key;
+  document.getElementById('ss-modal-title').textContent = '編輯寄樣記錄';
+  document.getElementById('ss-date').value = s.date||'';
+  document.getElementById('ss-supplier').value = s.supplierName||'';
+  document.getElementById('ss-ing-name').value = s.ingredientName||'';
+  document.getElementById('ss-inci').value = s.inci||'';
+  document.getElementById('ss-category').value = s.category||'';
+  document.getElementById('ss-status').value = s.status||'待收樣';
+  document.getElementById('ss-evaluator').value = s.evaluator||'';
+  document.getElementById('ss-quantity').value = s.quantity||'';
+  document.getElementById('ss-note').value = s.note||'';
+  document.getElementById('ss-eval-result').value = s.evalResult||'';
+  document.getElementById('ss-preview-area').style.display = 'none';
+  document.getElementById('ss-files-list').innerHTML = s.files ? s.files.map(f=>`<div class="file-chip">📎 ${f}</div>`).join('') : '';
+  document.getElementById('modal-ss').classList.add('open');
+}
+
+function openSSDetail(key) {
+  const s = supplierSamples.find(x=>x._key===key);
+  if(!s) return;
+  const html = `
+    <div class="grid2 text-sm mb-16">
+      <div><span class="text-muted">日期：</span>${s.date||'—'}</div>
+      <div><span class="text-muted">供應商：</span><b>${s.supplierName||'—'}</b></div>
+      <div><span class="text-muted">原料名稱：</span><b>${s.ingredientName||'—'}</b></div>
+      <div><span class="text-muted">INCI：</span>${s.inci||'—'}</div>
+      <div><span class="text-muted">分類：</span><span class="tag ${tagColor(s.category)}">${s.category||'—'}</span></div>
+      <div><span class="text-muted">狀態：</span><span class="tag ${statusColor(s.status)}">${s.status||'—'}</span></div>
+      <div><span class="text-muted">評估人：</span>${s.evaluator||'—'}</div>
+      <div><span class="text-muted">收樣量：</span>${s.quantity||'—'}</div>
+    </div>
+    ${s.note?`<div class="notice mb-16"><b>備註：</b>${s.note}</div>`:''}
+    ${s.evalResult?`<div class="notice mb-16" style="border-color:var(--green)"><b>評估結果：</b><br>${s.evalResult}</div>`:''}
+    ${s.photoBase64?`<div style="margin-top:12px;"><div class="label mb-4">樣品照片</div><img src="${s.photoBase64}" style="max-width:100%;border-radius:8px;border:1px solid var(--border)"></div>`:''}
+    ${s.files?.length?`<div style="margin-top:12px;"><div class="label mb-4">附件</div>${s.files.map(f=>`<div class="file-chip">📎 ${f}</div>`).join('')}</div>`:''}
+    <div style="margin-top:16px;display:flex;gap:8px;">
+      <button class="btn btn-primary btn-sm" onclick="closeModal('modal-ss-detail');openSSEdit('${s._key}')">✏️ 編輯</button>
+      <button class="btn btn-green btn-sm" onclick="addSSToIngredient('${s._key}')">➕ 加入原料庫</button>
+    </div>`;
+  document.getElementById('ss-detail-content').innerHTML = html;
+  document.getElementById('ss-detail-title').textContent = s.ingredientName||'寄樣詳情';
+  document.getElementById('modal-ss-detail').classList.add('open');
+}
+
+async function saveSSRecord() {
+  const data = {
+    date: document.getElementById('ss-date').value,
+    supplierName: document.getElementById('ss-supplier').value,
+    ingredientName: document.getElementById('ss-ing-name').value,
+    inci: document.getElementById('ss-inci').value,
+    category: document.getElementById('ss-category').value,
+    status: document.getElementById('ss-status').value,
+    evaluator: document.getElementById('ss-evaluator').value,
+    quantity: document.getElementById('ss-quantity').value,
+    note: document.getElementById('ss-note').value,
+    evalResult: document.getElementById('ss-eval-result').value,
+    hasPhoto: !!ssPhotoBase64,
+    photoBase64: ssPhotoBase64 || '',
+    files: ssFiles || [],
+    hasFile: (ssFiles||[]).length > 0,
+    updatedAt: new Date().toISOString(),
+  };
+  if(!data.ingredientName) { alert('請填寫原料名稱'); return; }
+  const btn = document.getElementById('btn-save-ss');
+  btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    if(editingSSId) {
+      await fbUpdate('supplier_samples/' + editingSSId, data);
+    } else {
+      await fbPush('supplier_samples', {...data, createdAt: new Date().toISOString()});
+    }
+    closeModal('modal-ss');
+    ssPhotoBase64 = ''; ssFiles = [];
+    await loadSupplierSamples();
+  } catch(e) { alert('儲存失敗：'+e.message); }
+  btn.disabled = false; btn.textContent = '儲存';
+}
+
+async function deleteSSRecord(key) {
+  if(!confirm('確定刪除此寄樣記錄？')) return;
+  await fbRemove('supplier_samples/' + key);
+  await loadSupplierSamples();
+}
+
+// Camera / Photo
+let ssPhotoBase64 = '';
+let ssFiles = [];
+
+function triggerCamera() {
+  document.getElementById('ss-camera-input').click();
+}
+function triggerFileUpload() {
+  document.getElementById('ss-file-input').click();
+}
+
+async function handlePhotoCapture(input) {
+  const file = input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    ssPhotoBase64 = e.target.result;
+    document.getElementById('ss-preview-img').src = ssPhotoBase64;
+    document.getElementById('ss-preview-area').style.display = '';
+    // AI識別
+    await recognizePhoto(ssPhotoBase64);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function recognizePhoto(base64) {
+  const apiKey = document.getElementById('api-key')?.value?.trim() || localStorage.getItem('elg_api_key') || '';
+  if(!apiKey) return;
+  document.getElementById('ss-ai-recognizing').style.display = '';
+  try {
+    const imgData = base64.split(',')[1];
+    const mime = base64.split(';')[0].split(':')[1];
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body: JSON.stringify({
+        model:'claude-sonnet-4-5', max_tokens:500,
+        messages:[{role:'user', content:[
+          {type:'image', source:{type:'base64', media_type:mime, data:imgData}},
+          {type:'text', text:`請辨識這個化妝品原料的標籤或樣品，提取以下資訊（JSON格式回應）：
+{"ingredientName":"原料中文名","inci":"INCI名稱","supplierName":"供應商名稱","batchNo":"批次號","specification":"規格"}
+如果看不到某欄位就填空字串。只回應JSON不要其他文字。`}
+        ]}]
+      })
+    });
+    const data = await res.json();
+    if(data.content?.[0]?.text) {
+      try {
+        const info = JSON.parse(data.content[0].text.replace(/```json?|```/g,'').trim());
+        if(info.ingredientName) document.getElementById('ss-ing-name').value = info.ingredientName;
+        if(info.inci) document.getElementById('ss-inci').value = info.inci;
+        if(info.supplierName) document.getElementById('ss-supplier').value = info.supplierName;
+        if(info.batchNo || info.specification) {
+          const note = document.getElementById('ss-note');
+          note.value = [info.batchNo?'批次：'+info.batchNo:'', info.specification?'規格：'+info.specification:''].filter(Boolean).join('\n');
+        }
+      } catch(e) {}
+    }
+  } catch(e) { console.error('AI識別失敗', e); }
+  document.getElementById('ss-ai-recognizing').style.display = 'none';
+}
+
+async function handleFileUpload(input) {
+  const files = [...input.files];
+  ssFiles = ssFiles || [];
+  for(const f of files) {
+    ssFiles.push(f.name);
+    const chip = document.createElement('div');
+    chip.className = 'file-chip';
+    chip.textContent = '📎 ' + f.name;
+    document.getElementById('ss-files-list').appendChild(chip);
+  }
+  // If PDF/PPTX/DOCX — AI summary
+  const docFile = files.find(f => /\.(pdf|pptx|docx|ppt|doc)$/i.test(f.name));
+  if(docFile) {
+    const apiKey = document.getElementById('api-key')?.value?.trim() || '';
+    if(apiKey && docFile.type === 'application/pdf') {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const base64 = e.target.result.split(',')[1];
+        document.getElementById('ss-ai-recognizing').style.display = '';
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method:'POST',
+            headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+            body: JSON.stringify({
+              model:'claude-sonnet-4-5', max_tokens:800,
+              messages:[{role:'user', content:[
+                {type:'document', source:{type:'base64', media_type:'application/pdf', data:base64}},
+                {type:'text', text:'這是原料供應商提供的TDS或簡報資料。請提取：1.原料名稱(中英文) 2.INCI名稱 3.功效/特色 4.建議用量 5.供應商資訊。用繁體中文簡潔整理成摘要填入備註欄。'}
+              ]}]
+            })
+          });
+          const data = await res.json();
+          if(data.content?.[0]?.text) {
+            const note = document.getElementById('ss-note');
+            note.value = (note.value ? note.value + '\n\n' : '') + '【AI文件摘要】\n' + data.content[0].text;
+          }
+        } catch(e) {}
+        document.getElementById('ss-ai-recognizing').style.display = 'none';
+      };
+      reader.readAsDataURL(docFile);
+    }
+  }
+}
+
+function addSSToIngredient(key) {
+  const s = supplierSamples.find(x=>x._key===key);
+  if(!s) return;
+  closeModal('modal-ss-detail');
+  nav('search');
+  setTimeout(() => {
+    document.getElementById('s-keyword').value = s.ingredientName || '';
+    doSearch();
+  }, 300);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FORMULA SAMPLE PAGE（打樣寄樣記錄）
+// ══════════════════════════════════════════════════════════════════════════════
+let formulaSamples = [];
+let editingFSId = null;
+
+async function loadFormulaSamples() {
+  const data = await fbGet('formula_samples');
+  formulaSamples = Object.entries(data).map(([k,v])=>({...v, _key:k}))
+    .sort((a,b) => (b.sentDate||'').localeCompare(a.sentDate||''));
+  renderFSList();
+  updateFSStat();
+}
+
+function updateFSStat() {
+  const pending = formulaSamples.filter(x=>!x.clientFeedback).length;
+  const replied = formulaSamples.filter(x=>x.clientFeedback).length;
+  document.getElementById('fs-stat-total').textContent = formulaSamples.length;
+  document.getElementById('fs-stat-pending').textContent = pending;
+  document.getElementById('fs-stat-replied').textContent = replied;
+}
+
+function renderFSList(filter='') {
+  const tbody = document.getElementById('fs-tbody');
+  let list = formulaSamples;
+  if(filter) list = list.filter(x =>
+    x.clientName?.includes(filter) || x.formulaName?.includes(filter) || x.status?.includes(filter));
+  if(!list.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">尚無打樣寄樣記錄</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(s => `
+    <tr onclick="openFSDetail('${s._key}')" style="cursor:pointer;">
+      <td>${s.sampleNo||'—'}</td>
+      <td><b>${s.formulaName||'—'}</b></td>
+      <td>${s.clientName||'—'}</td>
+      <td>${s.sentDate||'—'}</td>
+      <td><span class="tag ${fsStatusColor(s.status)}">${s.status||'已寄出'}</span></td>
+      <td>${s.clientFeedback?'✅ 已回覆':'⏳ 待回覆'}</td>
+      <td>${s.result?`<span class="tag ${s.result==='採用'?'tag-green':s.result==='修改'?'tag-gold':'tag-red'}">${s.result}</span>`:'—'}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openFSEdit('${s._key}')">編輯</button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();printSampleSheet('${s._key}')">🖨寄樣單</button>
+      </td>
+    </tr>`).join('');
+}
+
+function fsStatusColor(s) {
+  return {已寄出:'tag-blue', 客戶收到:'tag-green', 待打樣:'tag-gold', 打樣中:'tag-purple', 已取消:'tag-red'}[s] || 'tag-gray';
+}
+
+function openFSNew() {
+  editingFSId = null;
+  document.getElementById('fs-modal-title').textContent = '新增打樣寄樣記錄';
+  document.getElementById('fs-form').reset();
+  document.getElementById('fs-sent-date').value = new Date().toISOString().slice(0,10);
+  // Auto gen sample no
+  const no = 'ELG-S-' + new Date().getFullYear() + String(formulaSamples.length+1).padStart(3,'0');
+  document.getElementById('fs-sample-no').value = no;
+  // Populate formula options
+  const sel = document.getElementById('fs-formula-select');
+  sel.innerHTML = '<option value="">-- 選擇配方 --</option>' +
+    savedFormulas.map(f=>`<option value="${f.name}">${f.name}</option>`).join('');
+  document.getElementById('modal-fs').classList.add('open');
+}
+
+function openFSEdit(key) {
+  const s = formulaSamples.find(x=>x._key===key);
+  if(!s) return;
+  editingFSId = key;
+  document.getElementById('fs-modal-title').textContent = '編輯打樣寄樣記錄';
+  ['sample-no','formula-name','client-name','client-contact','sent-date','tracking-no',
+   'product-type','batch-size','status','note','client-feedback','result','follow-up-date'].forEach(f => {
+    const el = document.getElementById('fs-' + f);
+    const key2 = f.replace(/-([a-z])/g, (_,c)=>c.toUpperCase());
+    if(el) el.value = s[key2] || '';
+  });
+  const sel = document.getElementById('fs-formula-select');
+  sel.innerHTML = '<option value="">-- 選擇配方 --</option>' +
+    savedFormulas.map(f=>`<option value="${f.name}" ${f.name===s.formulaName?'selected':''}>${f.name}</option>`).join('');
+  document.getElementById('modal-fs').classList.add('open');
+}
+
+async function saveFSRecord() {
+  const get = id => document.getElementById('fs-'+id)?.value || '';
+  const formulaName = get('formula-select') || get('formula-name');
+  const data = {
+    sampleNo: get('sample-no'),
+    formulaName,
+    clientName: get('client-name'),
+    clientContact: get('client-contact'),
+    sentDate: get('sent-date'),
+    trackingNo: get('tracking-no'),
+    productType: get('product-type'),
+    batchSize: get('batch-size'),
+    status: get('status'),
+    note: get('note'),
+    clientFeedback: get('client-feedback'),
+    result: get('result'),
+    followUpDate: get('follow-up-date'),
+    updatedAt: new Date().toISOString(),
+  };
+  if(!data.formulaName && !data.clientName) { alert('請至少填寫配方名稱或客戶名稱'); return; }
+  const btn = document.getElementById('btn-save-fs');
+  btn.disabled = true; btn.textContent = '儲存中...';
+  try {
+    if(editingFSId) {
+      await fbUpdate('formula_samples/' + editingFSId, data);
+    } else {
+      await fbPush('formula_samples', {...data, createdAt: new Date().toISOString()});
+    }
+    closeModal('modal-fs');
+    await loadFormulaSamples();
+  } catch(e) { alert('儲存失敗：'+e.message); }
+  btn.disabled = false; btn.textContent = '儲存';
+}
+
+function openFSDetail(key) {
+  const s = formulaSamples.find(x=>x._key===key);
+  if(!s) return;
+  const linked = savedFormulas.find(f=>f.name===s.formulaName);
+  document.getElementById('fs-detail-content').innerHTML = `
+    <div class="grid2 text-sm mb-16">
+      <div><span class="text-muted">寄樣單號：</span><b>${s.sampleNo||'—'}</b></div>
+      <div><span class="text-muted">寄出日期：</span>${s.sentDate||'—'}</div>
+      <div><span class="text-muted">配方名稱：</span><b>${s.formulaName||'—'}</b></div>
+      <div><span class="text-muted">產品類型：</span>${s.productType||'—'}</div>
+      <div><span class="text-muted">客戶名稱：</span><b>${s.clientName||'—'}</b></div>
+      <div><span class="text-muted">聯絡人：</span>${s.clientContact||'—'}</div>
+      <div><span class="text-muted">快遞單號：</span>${s.trackingNo||'—'}</div>
+      <div><span class="text-muted">打樣量：</span>${s.batchSize||'—'}</div>
+      <div><span class="text-muted">狀態：</span><span class="tag ${fsStatusColor(s.status)}">${s.status||'—'}</span></div>
+      <div><span class="text-muted">結果：</span>${s.result?`<span class="tag ${s.result==='採用'?'tag-green':s.result==='修改'?'tag-gold':'tag-red'}">${s.result}</span>`:'—'}</div>
+      ${s.followUpDate?`<div><span class="text-muted">追蹤日期：</span>${s.followUpDate}</div>`:''}
+    </div>
+    ${s.note?`<div class="notice mb-16"><b>備註：</b>${s.note}</div>`:''}
+    ${s.clientFeedback?`<div class="notice mb-16" style="border-color:var(--green)"><b>客戶回覆：</b><br>${s.clientFeedback}</div>`:''}
+    ${linked?`<div class="notice mb-16" style="border-color:var(--accent)">📋 已連結配方 <b>${linked.name}</b>（${linked.rows?.length||0}種原料）</div>`:''}
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary btn-sm" onclick="closeModal('modal-fs-detail');openFSEdit('${s._key}')">✏️ 編輯</button>
+      <button class="btn btn-ghost btn-sm" onclick="printSampleSheet('${s._key}')">🖨 列印寄樣單</button>
+    </div>`;
+  document.getElementById('modal-fs').classList.remove('open');
+  document.getElementById('modal-fs-detail').classList.add('open');
+}
+
+function printSampleSheet(key) {
+  const s = formulaSamples.find(x=>x._key===key);
+  if(!s) return;
+  const linked = savedFormulas.find(f=>f.name===s.formulaName);
+  const formulaRows = linked?.rows?.map(r=>
+    `<tr><td>${r.phase||'—'}</td><td>${r.name||'—'}</td><td>${r.inci||'—'}</td><td>${r.pct?.toFixed?.(2)||r.pct||'—'}%</td></tr>`
+  ).join('') || '';
+  const w = window.open('', '_blank');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>寄樣單 ${s.sampleNo}</title>
+    <style>
+      body{font-family:'Noto Sans TC',sans-serif;padding:30px;color:#000;max-width:800px;margin:0 auto;}
+      h1{font-size:20px;text-align:center;border-bottom:3px solid #000;padding-bottom:10px;margin-bottom:20px;}
+      .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;}
+      .field{border:1px solid #ccc;padding:8px 12px;border-radius:4px;}
+      .label{font-size:11px;color:#666;margin-bottom:2px;}
+      .val{font-size:13px;font-weight:600;}
+      table{width:100%;border-collapse:collapse;margin-top:12px;}
+      th,td{border:1px solid #ccc;padding:6px 10px;font-size:12px;}
+      th{background:#f5f5f5;}
+      .sign-row{display:flex;gap:40px;margin-top:40px;}
+      .sign-box{flex:1;border-top:1px solid #000;padding-top:4px;font-size:11px;color:#666;}
+      .stamp{text-align:right;font-size:12px;color:#666;margin-top:8px;}
+      @media print{button{display:none}}
+    </style></head>
+    <body>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
+        <div><h1 style="margin:0;border:none;">依洛嘉國際 ELG Corp</h1><div style="font-size:13px;color:#666;">打樣寄樣記錄單</div></div>
+        <div style="text-align:right;font-size:12px;">單號：<b>${s.sampleNo||'—'}</b><br>日期：${s.sentDate||'—'}</div>
+      </div>
+      <div class="grid2">
+        <div class="field"><div class="label">客戶名稱</div><div class="val">${s.clientName||'—'}</div></div>
+        <div class="field"><div class="label">聯絡人</div><div class="val">${s.clientContact||'—'}</div></div>
+        <div class="field"><div class="label">配方名稱</div><div class="val">${s.formulaName||'—'}</div></div>
+        <div class="field"><div class="label">產品類型</div><div class="val">${s.productType||'—'}</div></div>
+        <div class="field"><div class="label">打樣量</div><div class="val">${s.batchSize||'—'}</div></div>
+        <div class="field"><div class="label">快遞單號</div><div class="val">${s.trackingNo||'—'}</div></div>
+      </div>
+      ${s.note?`<div style="border:1px solid #ccc;padding:10px;border-radius:4px;font-size:13px;margin-bottom:16px;"><b>備註：</b>${s.note}</div>`:''}
+      ${formulaRows?`<b style="font-size:13px;">配方明細</b><table><tr><th>相</th><th>原料名稱</th><th>INCI</th><th>用量</th></tr>${formulaRows}</table>`:''}
+      <div class="sign-row">
+        <div class="sign-box">研發人員</div>
+        <div class="sign-box">主管確認</div>
+        <div class="sign-box">客戶簽收</div>
+      </div>
+      <div class="stamp">ELG Corp © ${new Date().getFullYear()} ｜ 機密文件，請妥善保管</div>
+      <br><button onclick="window.print()" style="padding:8px 20px;background:#000;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">🖨 列印</button>
+    </body></html>`);
+  w.document.close();
+}
+
 </script>
+<!-- ════ PAGE: SUPPLIER SAMPLE ════ -->
+<div id="page-supplier-sample" class="page">
+  <div class="topbar">
+    <div class="page-title">📦 原料商寄樣記錄</div>
+    <div class="topbar-actions">
+      <input class="input" id="ss-search" placeholder="搜尋原料/供應商..." style="width:200px;" oninput="renderSSList(this.value)">
+      <button class="btn btn-primary btn-sm" onclick="openSSNew()">➕ 新增寄樣</button>
+    </div>
+  </div>
+  <div style="padding:24px;">
+    <div class="grid4 mb-16">
+      <div class="stat-card"><div class="stat-num" id="ss-stat-total">0</div><div class="stat-label">總寄樣數</div></div>
+      <div class="stat-card"><div class="stat-num" id="ss-stat-pending">0</div><div class="stat-label">待評估</div></div>
+      <div class="stat-card"><div class="stat-num" id="ss-stat-done">0</div><div class="stat-label">已評估</div></div>
+      <div class="stat-card"><div class="stat-num">📷</div><div class="stat-label">AI 圖片識別</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>日期</th><th>原料名稱</th><th>供應商</th><th>分類</th><th>狀態</th><th>附件</th><th>評估人</th><th>操作</th></tr></thead>
+          <tbody id="ss-tbody"><tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">載入中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ PAGE: FORMULA SAMPLE ════ -->
+<div id="page-formula-sample" class="page">
+  <div class="topbar">
+    <div class="page-title">🚚 打樣寄樣記錄</div>
+    <div class="topbar-actions">
+      <input class="input" id="fs-search" placeholder="搜尋客戶/配方..." style="width:200px;" oninput="renderFSList(this.value)">
+      <button class="btn btn-primary btn-sm" onclick="openFSNew()">➕ 新增寄樣</button>
+    </div>
+  </div>
+  <div style="padding:24px;">
+    <div class="grid4 mb-16">
+      <div class="stat-card"><div class="stat-num" id="fs-stat-total">0</div><div class="stat-label">總寄樣數</div></div>
+      <div class="stat-card"><div class="stat-num" id="fs-stat-pending">0</div><div class="stat-label">待回覆</div></div>
+      <div class="stat-card"><div class="stat-num" id="fs-stat-replied">0</div><div class="stat-label">已回覆</div></div>
+      <div class="stat-card"><div class="stat-num">🖨</div><div class="stat-label">可列印寄樣單</div></div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>寄樣單號</th><th>配方名稱</th><th>客戶名稱</th><th>寄出日期</th><th>狀態</th><th>回覆</th><th>結果</th><th>操作</th></tr></thead>
+          <tbody id="fs-tbody"><tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">載入中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: 原料商寄樣 ════ -->
+<div id="modal-ss" class="modal-overlay">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header"><span id="ss-modal-title">新增原料商寄樣記錄</span></div>
+    <div class="modal-body">
+      <form id="ss-form">
+        <!-- 拍照識別區 -->
+        <div class="card mb-16" style="border:2px dashed var(--accent);background:rgba(79,156,249,.05);">
+          <div class="card-title">📷 拍照 / 上傳識別</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-sm" onclick="triggerCamera()">📷 拍攝樣品標籤</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="triggerFileUpload()">📎 上傳圖片/PDF/PPT</button>
+            <span id="ss-ai-recognizing" style="display:none;font-size:12px;color:var(--accent);align-self:center;">🤖 AI 識別中...</span>
+          </div>
+          <input type="file" id="ss-camera-input" accept="image/*" capture="environment" style="display:none;" onchange="handlePhotoCapture(this)">
+          <input type="file" id="ss-file-input" accept="image/*,.pdf,.pptx,.ppt,.docx,.doc" multiple style="display:none;" onchange="handleFileUpload(this)">
+          <div id="ss-preview-area" style="display:none;margin-top:10px;">
+            <img id="ss-preview-img" style="max-width:100%;max-height:180px;border-radius:6px;border:1px solid var(--border);">
+          </div>
+          <div id="ss-files-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
+        </div>
+        <!-- 基本資料 -->
+        <div class="form-row">
+          <div class="field"><div class="label">收樣日期 *</div><input class="input" id="ss-date" type="date"></div>
+          <div class="field"><div class="label">狀態</div>
+            <select class="select" id="ss-status">
+              <option>待收樣</option><option>已收樣</option><option>待評估</option><option>已評估</option><option>不採用</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">原料名稱 *</div><input class="input" id="ss-ing-name" placeholder="中文名稱"></div>
+          <div class="field"><div class="label">INCI 名稱</div><input class="input" id="ss-inci" placeholder="AI 識別後自動填入"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">供應商名稱</div><input class="input" id="ss-supplier" placeholder="供應商"></div>
+          <div class="field"><div class="label">原料分類</div>
+            <select class="select" id="ss-category">
+              <option value="">選擇...</option><option>AI</option><option>FI</option><option>PR</option><option>SI</option><option>CF</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">收樣量</div><input class="input" id="ss-quantity" placeholder="例：100g"></div>
+          <div class="field"><div class="label">評估人</div><input class="input" id="ss-evaluator" placeholder="負責評估的研發人員"></div>
+        </div>
+        <div class="field"><div class="label">備註（AI文件摘要將自動填入）</div><textarea class="textarea" id="ss-note" rows="3"></textarea></div>
+        <div class="field"><div class="label">評估結果</div><textarea class="textarea" id="ss-eval-result" rows="3" placeholder="質地、氣味、相容性、建議用途..."></textarea></div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-ss')">取消</button>
+      <button class="btn btn-primary" id="btn-save-ss" onclick="saveSSRecord()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: 寄樣詳情 ════ -->
+<div id="modal-ss-detail" class="modal-overlay">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header"><span id="ss-detail-title">寄樣詳情</span></div>
+    <div class="modal-body"><div id="ss-detail-content"></div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('modal-ss-detail')">關閉</button></div>
+  </div>
+</div>
+
+<!-- ════ MODAL: 打樣寄樣 ════ -->
+<div id="modal-fs" class="modal-overlay">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header"><span id="fs-modal-title">新增打樣寄樣記錄</span></div>
+    <div class="modal-body">
+      <form id="fs-form">
+        <div class="form-row">
+          <div class="field"><div class="label">寄樣單號</div><input class="input" id="fs-sample-no" placeholder="自動產生"></div>
+          <div class="field"><div class="label">寄出日期 *</div><input class="input" id="fs-sent-date" type="date"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">連結配方</div>
+            <select class="select" id="fs-formula-select"><option value="">-- 選擇配方 --</option></select>
+          </div>
+          <div class="field"><div class="label">配方名稱（手動）</div><input class="input" id="fs-formula-name" placeholder="或手動輸入"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">客戶名稱 *</div><input class="input" id="fs-client-name" placeholder="客戶/品牌名稱"></div>
+          <div class="field"><div class="label">聯絡人</div><input class="input" id="fs-client-contact" placeholder="聯絡人姓名/Line/Email"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">產品類型</div><input class="input" id="fs-product-type" placeholder="例：保濕精華液"></div>
+          <div class="field"><div class="label">打樣量</div><input class="input" id="fs-batch-size" placeholder="例：100g × 3支"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><div class="label">快遞單號</div><input class="input" id="fs-tracking-no" placeholder="黑貓/郵局/宅配通..."></div>
+          <div class="field"><div class="label">狀態</div>
+            <select class="select" id="fs-status">
+              <option>待打樣</option><option>打樣中</option><option>已寄出</option><option>客戶收到</option><option>已取消</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><div class="label">備註/寄樣說明</div><textarea class="textarea" id="fs-note" rows="2" placeholder="使用方式、注意事項、測試重點..."></textarea></div>
+        <hr class="divider">
+        <div class="card-title" style="margin-bottom:10px;">客戶回饋</div>
+        <div class="form-row">
+          <div class="field"><div class="label">結果</div>
+            <select class="select" id="fs-result">
+              <option value="">待定</option><option>採用</option><option>修改</option><option>不採用</option>
+            </select>
+          </div>
+          <div class="field"><div class="label">追蹤日期</div><input class="input" id="fs-follow-up-date" type="date"></div>
+        </div>
+        <div class="field"><div class="label">客戶回覆內容</div>
+          <textarea class="textarea" id="fs-client-feedback" rows="3" placeholder="客戶對質地、氣味、功效的評價與修改意見..."></textarea>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-fs')">取消</button>
+      <button class="btn btn-primary" id="btn-save-fs" onclick="saveFSRecord()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: 打樣詳情 ════ -->
+<div id="modal-fs-detail" class="modal-overlay">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header">打樣寄樣詳情</div>
+    <div class="modal-body"><div id="fs-detail-content"></div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('modal-fs-detail')">關閉</button></div>
+  </div>
+</div>
+
+<style>
+.tag { display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600; }
+.tag-blue { background:rgba(79,156,249,.15);color:#4f9cf9; }
+.tag-green { background:rgba(16,185,129,.15);color:#10b981; }
+.tag-gold { background:rgba(245,158,11,.15);color:#f59e0b; }
+.tag-red { background:rgba(239,68,68,.15);color:#ef4444; }
+.tag-purple { background:rgba(124,58,237,.15);color:#7c3aed; }
+.tag-gray { background:var(--bg3);color:var(--text3); }
+.file-chip { display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;background:var(--bg3);border:1px solid var(--border);font-size:12px;color:var(--text2); }
+</style>
+
 </body>
-</html>
