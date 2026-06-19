@@ -1974,42 +1974,51 @@ function findSimilarFormulas(ptype, effects) {
 }
 
 function showSimilarFormulas(list) {
-  var block = document.getElementById("block-similar");
-  var container = document.getElementById("similar-list");
-  if(!list.length) { block.style.display="none"; return; }
-
-  var TYPE_COLORS = {"精華液":"#4f9cf9","乳液":"#10b981","乳霜":"#f59e0b","凝膠":"#7c3aed",
-    "凝膠霜":"#ec4899","面膜":"#06b6d4","噴霧":"#84cc16","噴霧液":"#84cc16",
-    "清潔":"#f97316","其他":"#6b7280"};
-
-  container.innerHTML = list.map(function(f) {
-    var col = TYPE_COLORS[f.type]||"#6b7280";
-    var topIngs = f.ings.slice(0,5).map(function(i){return i.raw+"("+i.pct+"%)";}).join("、");
-    // INCI 輸出（前10個）
-    var inciList = [];
-    var seen = {};
+  var block = document.getElementById('block-similar');
+  var container = document.getElementById('similar-list');
+  if(!list.length) { block.style.display='none'; return; }
+  var TYPE_COLORS = {'精華液':'#4f9cf9','乳液':'#10b981','乳霜':'#f59e0b','凝膠':'#7c3aed',
+    '凝膠霜':'#ec4899','面膜':'#06b6d4','噴霧':'#84cc16','噴霧液':'#84cc16','清潔':'#f97316','其他':'#6b7280'};
+  container.innerHTML = '';
+  list.forEach(function(f) {
+    var col = TYPE_COLORS[f.type]||'#6b7280';
+    var topIngs = f.ings.slice(0,5).map(function(i){return i.raw+'('+i.pct+'%)';}).join('、');
+    var inciList=[]; var seen={};
     f.ings.slice().sort(function(a,b){return b.pct-a.pct;}).forEach(function(ing){
       ing.inci.split(/[,，]/).map(function(s){return s.trim();}).filter(Boolean).forEach(function(p){
         if(!seen[p.toLowerCase()]){seen[p.toLowerCase()]=true;inciList.push(p);}
       });
     });
-    var inciStr = inciList.slice(0,10).join(", ")+(inciList.length>10?"...":"");
-
-    return "<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;">"
-      +"<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">"
-      +"<span style="background:"+col+"22;color:"+col+";font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;">"+f.type+"</span>"
-      +"<span style="font-weight:600;font-size:13px;">"+f.name+"</span>"
-      +"<span style="font-size:11px;color:var(--text3);">"+f.code+"</span>"
-      +"<button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:11px;" onclick="loadSimilarToAI('"+f.code+"')">用此配方改良 →</button>"
-      +"</div>"
-      +"<div style="font-size:11px;color:var(--text2);margin-bottom:6px;"><strong>成分（"+f.ings.length+"種）：</strong>"+topIngs+(f.ings.length>5?"...":"")+"</div>"
-      +"<div style="font-size:10px;color:var(--text3);line-height:1.6;border-top:1px solid var(--border);padding-top:6px;"><strong>INCI：</strong>"+inciStr+"</div>"
-      +"</div>";
-  }).join("");
-
-  block.style.display = "";
+    var inciStr = inciList.slice(0,10).join(', ')+(inciList.length>10?'...':'');
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;';
+    var header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+    var badge = document.createElement('span');
+    badge.style.cssText = 'background:'+col+'22;color:'+col+';font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;';
+    badge.textContent = f.type;
+    var name = document.createElement('strong');
+    name.style.fontSize = '13px';
+    name.textContent = f.name;
+    var code = document.createElement('span');
+    code.style.cssText = 'font-size:11px;color:var(--text3);';
+    code.textContent = f.code;
+    var btn = document.createElement('button');
+    btn.textContent = '用此配方改良 →';
+    btn.style.cssText = 'margin-left:auto;padding:3px 8px;font-size:11px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;cursor:pointer;color:var(--text2);';
+    btn.onclick = (function(code){return function(){loadSimilarToAI(code);};})(f.code);
+    header.appendChild(badge); header.appendChild(name); header.appendChild(code); header.appendChild(btn);
+    var ings_div = document.createElement('div');
+    ings_div.style.cssText = 'font-size:11px;color:var(--text2);margin-bottom:6px;';
+    ings_div.innerHTML = '<strong>成分（'+f.ings.length+'種）：</strong>'+topIngs+(f.ings.length>5?'...':'');
+    var inci_div = document.createElement('div');
+    inci_div.style.cssText = 'font-size:10px;color:var(--text3);line-height:1.6;border-top:1px solid var(--border);padding-top:6px;';
+    inci_div.innerHTML = '<strong>INCI：</strong>'+inciStr;
+    wrap.appendChild(header); wrap.appendChild(ings_div); wrap.appendChild(inci_div);
+    container.appendChild(wrap);
+  });
+  block.style.display = '';
 }
-
 function loadSimilarToAI(code) {
   // 載入此 BASE 配方到「修改舊配方」模式
   if(!window.BASE_FORMULAS) return;
@@ -2019,21 +2028,18 @@ function loadSimilarToAI(code) {
   switchAIMode("modify");
   // 建立一個臨時配方格式填入 mod-formula-rows
   var rows = f.ings.slice().sort(function(a,b){return b.pct-a.pct;})
-    .map(function(i){return i.raw+" ("+i.pct+"%) "+i.inci;}).join("
-");
+    .map(function(i){return i.raw+" ("+i.pct+"%) "+i.inci;}).join("\n");
   var preview = document.getElementById("mod-formula-preview");
   var rowsEl = document.getElementById("mod-formula-rows");
   if(preview && rowsEl) {
-    rowsEl.innerHTML = "<pre style="font-size:11px;">"+f.name+" ("+f.code+")
-"+rows+"</pre>";
+    rowsEl.innerHTML = '<pre style="font-size:11px;">'+f.name+' ('+f.code+')\n'+rows+'</pre>';
     preview.style.display = "";
   }
   // 暫存到 lastModifyFormula
   window._similarBaseFormula = f;
   document.getElementById("btn-run-modify").disabled = false;
   // 提示
-  alert("已載入「"+f.name+"」("+f.code+")
-請在下方填寫修改方向，再點「AI 分析並提出修改建議」");
+  alert('已載入「'+f.name+'」('+f.code+')\n請在下方填寫修改方向，再點「AI 分析並提出修改建議」');
 }
 
 async function runAI() {
