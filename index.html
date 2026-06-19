@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- ELG v20260620 -->
+<!-- ELG v20260620b -->
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
@@ -645,28 +645,54 @@ function openModal(id) {
     <div class="page-title">⚖️ 法規查詢</div>
   </div>
   <div style="padding:24px;">
+
+    <!-- ── Perplexity AI 查詢 ── -->
     <div class="card mb-16">
-      <div class="card-title">成分法規檢查</div>
-      <div class="flex gap-8 mb-16">
-        <input class="input" id="reg-keyword" placeholder="輸入 INCI 名稱或中文名..." style="flex:1;">
-        <select class="select" style="width:160px;" id="reg-market">
-          <option value="all">全部市場</option>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <div class="card-title" style="margin:0;">🔍 AI 法規即時查詢</div>
+        <span style="font-size:11px;background:rgba(79,156,249,.15);color:var(--accent);padding:2px 8px;border-radius:10px;font-weight:600;">Perplexity AI</span>
+        <span style="font-size:11px;color:var(--text3);margin-left:auto;">含即時來源引用</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+        <input class="input" id="reg-keyword" placeholder="輸入成分名稱（INCI 或中文）..." style="flex:1;min-width:180px;">
+        <select class="select" style="width:130px;" id="reg-market">
+          <option value="all">全市場</option>
           <option value="tw">台灣</option>
-          <option value="cn">中國</option>
-          <option value="eu">歐盟</option>
-          <option value="us">美國</option>
+          <option value="cn">中國 NMPA</option>
+          <option value="eu">歐盟 CosIng</option>
+          <option value="us">美國 FDA</option>
         </select>
-        <button class="btn btn-primary" onclick="checkRegulation()">查詢</button>
+        <button class="btn btn-primary" onclick="checkRegulationAI()">AI 查詢</button>
+        <button class="btn btn-ghost btn-sm" onclick="checkRegulationLocal()" title="使用本地快取資料">本地</button>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">
+        需填入 Perplexity API Key（下方設定）才能使用 AI 查詢。未填則使用本地資料。
       </div>
       <div id="reg-results">
-        <div class="notice">⚠️ 法規資料為常見限量參考，實際申報請以官方最新法規為準。</div>
+        <div class="notice">輸入成分名稱後點「AI 查詢」，Perplexity 將搜尋最新法規並附上官方來源連結。</div>
       </div>
     </div>
-    <!-- 配方一鍵法規掃描 -->
+
+    <!-- ── API Key 設定 ── -->
+    <div class="card mb-16" style="padding:14px 18px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="font-size:13px;font-weight:600;color:var(--text2);">🔑 Perplexity API Key</div>
+        <input class="input" id="pplx-api-key" type="password" placeholder="pplx-..." style="flex:1;font-size:12px;">
+        <button class="btn btn-ghost btn-sm" onclick="savePplxKey()">儲存</button>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:6px;">
+        Key 僅儲存於本機瀏覽器，不會上傳。申請：<a href="https://www.perplexity.ai/settings/api" target="_blank" style="color:var(--accent);">perplexity.ai/settings/api</a>
+      </div>
+    </div>
+
+    <!-- ── 配方一鍵法規掃描 ── -->
     <div class="card">
-      <div class="card-title">配方法規全掃描</div>
-      <div class="notice mb-16">針對目前配方中的所有成分進行法規合規性初步檢查</div>
-      <button class="btn btn-primary" onclick="scanFormula()">🔍 掃描目前配方</button>
+      <div class="card-title">📋 配方法規全掃描</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">針對目前配方中的所有成分，先查本地法規庫，再對有疑慮的成分呼叫 Perplexity 深度查詢</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary" onclick="scanFormula()">🔍 快速掃描（本地）</button>
+        <button class="btn btn-ghost" onclick="scanFormulaAI()">🤖 AI 深度掃描</button>
+      </div>
       <div id="scan-results" style="margin-top:16px;"></div>
     </div>
   </div>
@@ -2369,33 +2395,172 @@ const REG_DB = {
   'alpha-arbutin': { tw:'≤2%', cn:'≤2%', eu:'≤2%（臉部）', note:'對苯二酚衍生物，孕婦慎用' },
 };
 
-function checkRegulation() {
-  const kw = document.getElementById('reg-keyword').value.toLowerCase().trim();
-  const market = document.getElementById('reg-market').value;
-  const el = document.getElementById('reg-results');
+// ── Perplexity Key 管理 ──────────────────────────────────────
+function savePplxKey() {
+  var k = document.getElementById('pplx-api-key').value.trim();
+  if(k) { localStorage.setItem('elg_pplx_key', k); alert('已儲存 Perplexity API Key'); }
+}
+(function() {
+  var saved = localStorage.getItem('elg_pplx_key');
+  if(saved) { var el = document.getElementById('pplx-api-key'); if(el) el.value = saved; }
+})();
+
+// ── 本地法規查詢 ─────────────────────────────────────────────
+function checkRegulation() { checkRegulationLocal(); }
+
+function checkRegulationLocal() {
+  var kw = (document.getElementById('reg-keyword').value||'').toLowerCase().trim();
+  var market = document.getElementById('reg-market').value;
+  var el = document.getElementById('reg-results');
   if(!kw) { el.innerHTML='<div class="notice">請輸入成分名稱</div>'; return; }
 
-  let found = null;
-  Object.entries(REG_DB).forEach(([k,v]) => { if(kw.includes(k)||k.includes(kw)) found={k,v}; });
+  var found = null;
+  Object.entries(REG_DB).forEach(function(entry) {
+    var k = entry[0], v = entry[1];
+    if(kw.includes(k)||k.includes(kw)) found={k:k,v:v};
+  });
 
   if(!found) {
-    el.innerHTML = `<div class="notice">⚠️ 「${kw}」在本地法規庫中無資料。建議查詢：<br>
-      <a href="https://consumer.fda.gov.tw/law/detail.aspx?nodeID=518&lawid=571" target="_blank" class="text-accent">台灣化粧品衛生管理法規</a> ｜
-      <a href="https://www.nmpa.gov.cn/hzhp/" target="_blank" class="text-accent">中國 NMPA</a> ｜
-      <a href="https://ec.europa.eu/growth/tools-databases/cosing/" target="_blank" class="text-accent">歐盟 CosIng</a></div>`;
+    el.innerHTML = '<div class="notice">⚠️ 「'+kw+'」在本地庫無資料，建議使用 AI 查詢。</div>';
+    return;
+  }
+  var k = found.k, v = found.v;
+  var markets = market==='all' ? ['tw','cn','eu','us'] : [market];
+  var mLabel = {tw:'🇹🇼 台灣',cn:'🇨🇳 中國',eu:'🇪🇺 歐盟',us:'🇺🇸 美國'};
+  var rows = markets.filter(function(m){return v[m];}).map(function(m){
+    return '<div><div class="label">'+mLabel[m]+'</div><div class="fw-600 text-green">'+v[m]+'</div></div>';
+  }).join('');
+  el.innerHTML = '<div class="card"><div class="card-title">'+k.toUpperCase()+' 限量規定（本地庫）</div>'
+    +'<div class="grid2">'+rows+'</div>'
+    +(v.note ? '<hr class="divider"><div class="text-sm text-muted">📌 '+v.note+'</div>' : '')
+    +'<div style="margin-top:10px;font-size:11px;color:var(--text3);">資料來自本地快取，點「AI 查詢」取得含來源的最新資訊</div>'
+    +'</div>';
+}
+
+// ── Perplexity AI 法規查詢 ───────────────────────────────────
+async function checkRegulationAI() {
+  var kw = (document.getElementById('reg-keyword').value||'').trim();
+  var market = document.getElementById('reg-market').value;
+  var el = document.getElementById('reg-results');
+  if(!kw) { el.innerHTML='<div class="notice">請輸入成分名稱</div>'; return; }
+
+  var apiKey = localStorage.getItem('elg_pplx_key') || (document.getElementById('pplx-api-key').value||'').trim();
+  if(!apiKey) {
+    el.innerHTML = '<div class="notice">⚠️ 請先填入 Perplexity API Key（見上方設定）</div>';
     return;
   }
 
-  const {k, v} = found;
-  const markets = market==='all' ? ['tw','cn','eu','us'] : [market];
-  const mLabel = {tw:'🇹🇼 台灣', cn:'🇨🇳 中國', eu:'🇪🇺 歐盟', us:'🇺🇸 美國'};
-  let html = `<div class="card"><div class="card-title">${k.toUpperCase()} 限量規定</div>
-    <div class="grid2">`;
-  markets.forEach(m => {
-    if(v[m]) html += `<div><div class="label">${mLabel[m]}</div><div class="fw-600 text-green">${v[m]}</div></div>`;
-  });
-  html += `</div>${v.note?`<hr class="divider"><div class="text-sm text-muted">📌 ${v.note}</div>`:''}</div>`;
-  el.innerHTML = html;
+  var marketName = {all:'台灣、中國、歐盟、美國各地',tw:'台灣（衛福部法規）',cn:'中國（NMPA）',eu:'歐盟（CosIng）',us:'美國（FDA）'}[market]||'各地';
+
+  el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);">'
+    +'<div style="font-size:13px;margin-bottom:8px;">🔍 Perplexity 正在搜尋最新法規...</div>'
+    +'<div style="font-size:11px;">查詢：'+kw+' ｜ 市場：'+marketName+'</div></div>';
+
+  var prompt = '你是化妝品法規專家。請查詢以下成分在化妝品中的法規限量規定，提供具體數字和官方來源。\n\n'+'成分：'+kw+'\n'+'查詢市場：'+marketName+'\n\n'+'請提供：\n'+'1. 各市場的具體限量（百分比或禁用狀態）\n'+'2. 適用的產品類別（留用/沖洗/眼部等差異）\n'+'3. 特殊限制或注意事項\n'+'4. 官方法規文件名稱或資料庫連結\n'+'5. 最後更新或修訂年份\n\n'+'格式：先用表格列出各市場限量，再用條列說明注意事項。最後列出所有來源。繁體中文回答。';
+
+  try {
+    var resp = await fetch('https://api.perplexity.ai/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer '+apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'sonar',
+        messages: [{role:'user', content:prompt}],
+        search_recency_filter: 'month',
+        return_citations: true,
+        return_images: false
+      })
+    });
+
+    if(!resp.ok) {
+      var err = await resp.json().catch(function(){return {};});
+      throw new Error((err.error&&err.error.message)||'HTTP '+resp.status);
+    }
+
+    var data = await resp.json();
+    var text = (data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)||'';
+    var citations = data.citations || [];
+
+    // 渲染結果
+    var md = text
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/^### (.+)$/gm, '<div style="font-size:14px;font-weight:700;color:var(--accent);margin:12px 0 6px;">$1</div>')
+      .replace(/^## (.+)$/gm, '<div style="font-size:15px;font-weight:700;color:var(--text1);margin:14px 0 8px;">$1</div>')
+      .replace(/^# (.+)$/gm, '<div style="font-size:16px;font-weight:700;margin:14px 0 8px;">$1</div>')
+      .replace(/^\| (.+)$/gm, function(l){ var cells=l.split('|').map(function(c){return c.trim();}).filter(Boolean); return '<tr>'+cells.map(function(c){return '<td style="padding:6px 10px;border:1px solid var(--border);">'+c+'</td>';}).join('')+'</tr>'; })
+      .replace(/^- (.+)$/gm, '<div style="padding:3px 0 3px 14px;border-left:2px solid var(--accent);margin:2px 0;color:var(--text2);">$1</div>')
+      .replace(/\n\n/g, '<div style="height:8px;"></div>')
+      .replace(/\n/g, '<br>');
+
+
+    // 來源引用
+    var citHtml = '';
+    if(citations && citations.length) {
+      citHtml = '<div style="margin-top:16px;padding:12px;background:var(--bg2);border-radius:8px;border:1px solid var(--border);">'
+        +'<div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;">📚 引用來源（'+citations.length+'個）</div>'
+        +'<div style="display:flex;flex-direction:column;gap:6px;">';
+      citations.forEach(function(url, i) {
+        var domain = url.replace(/^https?:\/\//, '').split('/')[0];
+        citHtml += '<a href="'+url+'" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--accent);text-decoration:none;padding:4px 8px;background:var(--bg3);border-radius:5px;">'
+          +'<span style="color:var(--text3);flex-shrink:0;">['+(i+1)+']</span>'
+          +'<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+domain+'</span>'
+          +'<span style="color:var(--text3);font-size:10px;flex-shrink:0;">↗</span>'
+          +'</a>';
+      });
+      citHtml += '</div></div>';
+    }
+
+    var ts = new Date().toLocaleString('zh-TW');
+    el.innerHTML = '<div class="card">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">'
+      +'<div class="card-title" style="margin:0;">'+kw.toUpperCase()+' 法規查詢結果</div>'
+      +'<span style="font-size:10px;background:rgba(79,156,249,.15);color:var(--accent);padding:2px 7px;border-radius:8px;">Perplexity AI</span>'
+      +'<span style="font-size:10px;color:var(--text3);margin-left:auto;">'+ts+'</span>'
+      +'</div>'
+      +'<div style="font-size:13px;line-height:1.8;color:var(--text1);">'+md+'</div>'
+      +citHtml
+      +'<div style="margin-top:12px;padding:8px 12px;background:var(--bg2);border-radius:6px;font-size:11px;color:var(--text3);">'
+      +'⚠️ AI 查詢結果僅供參考，實際申報請以官方最新法規為準。</div>'
+      +'</div>';
+
+  } catch(e) {
+    el.innerHTML = '<div class="notice" style="color:var(--red);">❌ Perplexity 查詢失敗：'+e.message+'<br>'
+      +'請確認 API Key 是否正確，或改用「本地」查詢。</div>';
+  }
+}
+
+// ── AI 深度法規掃描（配方） ───────────────────────────────────
+async function scanFormulaAI() {
+  var el = document.getElementById('scan-results');
+  if(!formula.length) { el.innerHTML='<div class="notice">配方尚無成分，請先建立配方</div>'; return; }
+
+  var apiKey = localStorage.getItem('elg_pplx_key') || (document.getElementById('pplx-api-key').value||'').trim();
+  if(!apiKey) { el.innerHTML='<div class="notice">⚠️ 請先填入 Perplexity API Key</div>'; return; }
+
+  el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);">🤖 AI 正在分析配方法規合規性...</div>';
+
+  var ingList = formula.map(function(f){return (f.name||f.zh||f.id)+'（'+f.inci+'）'+parseFloat(f.pct).toFixed(2)+'%';}).join('\n');
+  var prompt = '請審查以下化妝品配方成分的法規合規性（台灣、中國、歐盟）。'+'對每個有限量規定的成分，說明限量數字和是否合規。'+'最後給出總體合規風險評估（高/中/低）和具體建議。\n\n'+'配方成分：\n'+ingList+'\n\n'+'請用表格方式呈現各成分的合規狀態，並列出查詢來源。繁體中文回答。';
+
+  try {
+    var resp = await fetch('https://api.perplexity.ai/chat/completions', {
+      method:'POST',
+      headers:{'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
+      body:JSON.stringify({model:'sonar',messages:[{role:'user',content:prompt}],return_citations:true})
+    });
+    var data = await resp.json();
+    var text = (data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)||'';
+    var citations = data.citations||[];
+    var md = text.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+    var citHtml = citations.length ? '<div style="margin-top:12px;font-size:11px;color:var(--text3);">來源：'
+      +citations.map(function(u,i){return '<a href="'+u+'" target="_blank" style="color:var(--accent);">['+(i+1)+']</a>';}).join(' ')+'</div>' : '';
+    el.innerHTML = '<div class="card"><div class="card-title">AI 配方法規掃描結果</div>'
+      +'<div style="font-size:13px;line-height:1.8;">'+md+'</div>'+citHtml+'</div>';
+  } catch(e) {
+    el.innerHTML = '<div class="notice" style="color:var(--red);">❌ 查詢失敗：'+e.message+'</div>';
+  }
 }
 
 function scanFormula() {
