@@ -1923,53 +1923,86 @@ function switchAIView(view) {
 
 function renderAIFormulaTable(rows) {
   if(!rows || !rows.length) return;
-  var TYPE_COLORS = {"A":"#4f9cf9","B":"#10b981","C":"#f59e0b","D":"#7c3aed","E":"#ec4899"};
+  var PHASE_COLORS = {'A':'#4f9cf9','B':'#10b981','C':'#f59e0b','D':'#7c3aed','E':'#ec4899'};
   var prevPhase = null;
   var total = rows.reduce(function(s,r){return s+(parseFloat(r.pct)||0);},0);
+  var totalCost = 0;
+  var hasCost = false;
 
-  var trs = rows.map(function(r,i){
-    var phaseBadge = "";
+  var trs = rows.map(function(r) {
+    // 從 DB 查供應商和成本
+    var dbItem = r.db_id ? DB.find(function(x){return x.id===r.db_id;}) : null;
+    var supplier = r.supplier || (dbItem ? dbItem.sup : '') || '';
+    var costPerKg = parseFloat(r.cost_per_kg) || (dbItem ? parseFloat(dbItem.prc||dbItem.cost||0) : 0) || 0;
+    var pct = parseFloat(r.pct)||0;
+    var costContrib = costPerKg > 0 ? (pct/100) * costPerKg : 0;
+    if(costPerKg > 0) { hasCost = true; totalCost += costContrib; }
+
+    var phaseBadge = '';
     if(r.phase !== prevPhase) {
-      var pc = TYPE_COLORS[r.phase]||"#6b7280";
-      phaseBadge = "<span style=\"background:"+pc+"22;color:"+pc+";padding:1px 7px;border-radius:10px;font-size:11px;font-weight:700;\">"+(r.phase||"")+"</span>";
+      var pc = PHASE_COLORS[r.phase]||'#6b7280';
+      phaseBadge = '<span style="background:'+pc+'22;color:'+pc+';padding:1px 7px;border-radius:10px;font-size:11px;font-weight:700;">'+(r.phase||'')+'</span>';
       prevPhase = r.phase;
     }
-    var srcBadge = r.src === "原料庫"
-      ? "<span style=\"background:rgba(16,185,129,.15);color:#10b981;padding:1px 6px;border-radius:8px;font-size:10px;\">庫存</span>"
-      : r.src === "樣品登記"
-      ? "<span style=\"background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 6px;border-radius:8px;font-size:10px;\">樣品</span>"
-      : "<span style=\"background:rgba(99,102,241,.15);color:#6366f1;padding:1px 6px;border-radius:8px;font-size:10px;\">通用</span>";
-    return "<tr style=\"border-bottom:1px solid var(--border);\">"
-      +"<td style=\"padding:7px 10px;font-size:12px;\">"+phaseBadge+"</td>"
-      +"<td style=\"padding:7px 10px;font-size:12px;font-weight:500;\">"+r.raw+"</td>"
-      +"<td style=\"padding:7px 10px;font-size:11px;color:var(--text2);max-width:200px;word-break:break-word;\">"+r.inci+"</td>"
-      +"<td style=\"padding:7px 10px;font-size:12px;text-align:right;font-family:monospace;font-weight:600;\">"+parseFloat(r.pct).toFixed(2)+"%</td>"
-      +"<td style=\"padding:7px 10px;\">"+srcBadge+"</td>"
-      +"<td style=\"padding:7px 10px;font-size:11px;color:var(--text3);\">"+r.reason+"</td>"
-      +"</tr>";
-  }).join("");
+    var srcBadge = r.src === '原料庫'
+      ? '<span style="background:rgba(16,185,129,.15);color:#10b981;padding:1px 6px;border-radius:8px;font-size:10px;">庫存</span>'
+      : r.src === '樣品登記'
+      ? '<span style="background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 6px;border-radius:8px;font-size:10px;">樣品</span>'
+      : '<span style="background:rgba(99,102,241,.15);color:#6366f1;padding:1px 6px;border-radius:8px;font-size:10px;">通用</span>';
 
-  var totalRow = "<tr style=\"background:var(--bg2);font-weight:700;\">"
-    +"<td colspan=\"3\" style=\"padding:8px 10px;font-size:12px;\">Total</td>"
-    +"<td style=\"padding:8px 10px;text-align:right;font-size:13px;\">"
-    +(Math.abs(total-100)<0.5
-      ? "<span style=\"color:#10b981;\">"+total.toFixed(2)+"%</span>"
-      : "<span style=\"color:#ef4444;\">"+total.toFixed(2)+"% ⚠️</span>")
-    +"</td><td colspan=\"2\"></td></tr>";
+    var supCell = supplier
+      ? '<div style="font-size:11px;color:var(--text2);">'+supplier+'</div>'
+      : '<span style="color:var(--text3);font-size:11px;">—</span>';
 
-  document.getElementById("ai-formula-table-wrap").innerHTML =
-    "<table style=\"width:100%;border-collapse:collapse;font-size:13px;\">"
-    +"<thead><tr style=\"background:var(--bg2);border-bottom:2px solid var(--border);\">"
-    +"<th style=\"padding:8px 10px;text-align:left;font-size:11px;\">相別</th>"
-    +"<th style=\"padding:8px 10px;text-align:left;font-size:11px;\">原料名稱</th>"
-    +"<th style=\"padding:8px 10px;text-align:left;font-size:11px;\">INCI</th>"
-    +"<th style=\"padding:8px 10px;text-align:right;font-size:11px;\">用量%</th>"
-    +"<th style=\"padding:8px 10px;text-align:left;font-size:11px;\">來源</th>"
-    +"<th style=\"padding:8px 10px;text-align:left;font-size:11px;\">選用理由</th>"
-    +"</tr></thead><tbody>"+trs+totalRow+"</tbody></table>";
+    var costCell = costPerKg > 0
+      ? '<div style="font-size:12px;font-family:monospace;">NT$'+costPerKg.toLocaleString()+'/kg</div>'
+        +'<div style="font-size:10px;color:var(--text3);">佔'+costContrib.toFixed(2)+'元/kg配方</div>'
+      : '<span style="color:var(--text3);font-size:11px;">未登錄</span>';
+
+    return '<tr style="border-bottom:1px solid var(--border);">'
+      +'<td style="padding:7px 10px;font-size:12px;">'+phaseBadge+'</td>'
+      +'<td style="padding:7px 10px;">'
+        +'<div style="font-size:12px;font-weight:600;">'+r.raw+'</div>'
+        +supCell
+      +'</td>'
+      +'<td style="padding:7px 10px;font-size:11px;color:var(--text2);max-width:180px;word-break:break-word;">'+r.inci+'</td>'
+      +'<td style="padding:7px 10px;font-size:12px;text-align:right;font-family:monospace;font-weight:600;">'+pct.toFixed(2)+'%</td>'
+      +'<td style="padding:7px 10px;">'+srcBadge+'</td>'
+      +'<td style="padding:7px 10px;">'+costCell+'</td>'
+      +'<td style="padding:7px 10px;font-size:11px;color:var(--text3);">'+r.reason+'</td>'
+      +'</tr>';
+  }).join('');
+
+  var totalLabel = Math.abs(total-100)<0.5
+    ? '<span style="color:#10b981;">'+total.toFixed(2)+'%</span>'
+    : '<span style="color:#ef4444;">'+total.toFixed(2)+'% ⚠️</span>';
+
+  var costSummary = hasCost
+    ? '<span style="color:var(--accent);font-size:12px;">NT$'+totalCost.toFixed(0)+'/kg　≈ NT$'+(totalCost/10).toFixed(1)+'/100g</span>'
+    : '<span style="color:var(--text3);font-size:11px;">（需填入原料成本）</span>';
+
+  var totalRow = '<tr style="background:var(--bg2);font-weight:700;">'
+    +'<td colspan="3" style="padding:8px 10px;font-size:12px;">Total</td>'
+    +'<td style="padding:8px 10px;text-align:right;font-size:13px;">'+totalLabel+'</td>'
+    +'<td style="padding:8px 10px;font-size:11px;color:var(--text3);">來源</td>'
+    +'<td style="padding:8px 10px;">'+costSummary+'</td>'
+    +'<td style="padding:8px 10px;"></td>'
+    +'</tr>';
+
+  document.getElementById('ai-formula-table-wrap').innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+    +'<thead><tr style="background:var(--bg2);border-bottom:2px solid var(--border);">'
+    +'<th style="padding:8px 10px;text-align:left;font-size:11px;white-space:nowrap;">相別</th>'
+    +'<th style="padding:8px 10px;text-align:left;font-size:11px;">原料名稱 / 供應商</th>'
+    +'<th style="padding:8px 10px;text-align:left;font-size:11px;">INCI</th>'
+    +'<th style="padding:8px 10px;text-align:right;font-size:11px;white-space:nowrap;">用量%</th>'
+    +'<th style="padding:8px 10px;text-align:left;font-size:11px;">來源</th>'
+    +'<th style="padding:8px 10px;text-align:left;font-size:11px;white-space:nowrap;">每公斤成本</th>'
+    +'<th style="padding:8px 10px;text-align:left;font-size:11px;">選用理由</th>'
+    +'</tr></thead><tbody>'+trs+totalRow+'</tbody></table>';
 }
 
-// ── 找相似配方 ──────────────────────────────────────────────────
+
 function findSimilarFormulas(ptype, effects) {
   if(!window.BASE_FORMULAS || !BASE_FORMULAS.length) return [];
 
@@ -2085,7 +2118,7 @@ async function runAI() {
   // ── 原料庫上下文（優先公司庫存）──
   const relevantDB = DB.filter(function(e){return e.e1||e.dos;}).slice(0,180);
   const dbContext = relevantDB.map(function(e){
-    return e.id+"|"+((e.z||e.b)||"")+"|"+(e.i||"").slice(0,50)+"|"+(e.e1||"")+"|"+(e.dos||"")+"|"+(e.sol||"");
+    return e.id+"|"+((e.z||e.b)||"")+"|"+(e.i||"").slice(0,50)+"|"+(e.e1||"")+"|"+(e.dos||"")+"|"+(e.sol||"")+"|sup:"+(e.sup||"");
   }).join("\n");
 
   // ── 樣品登記上下文 ──
@@ -2118,10 +2151,12 @@ async function runAI() {
     +"  \"summary\": \"配方特色說明（2-3句）\",\n"
     +"  \"notes\": \"注意事項\",\n"
     +"  \"rows\": [\n"
-    +"    {\"phase\":\"A\",\"raw\":\"原料名稱\",\"inci\":\"INCI名稱\",\"pct\":40.0,\"src\":\"原料庫\",\"db_id\":\"LCA-001或空字串\",\"reason\":\"選用理由（10字內）\"}\n"
+    +"    {\"phase\":\"A\",\"raw\":\"原料名稱\",\"inci\":\"INCI名稱\",\"pct\":40.0,\"src\":\"原料庫\",\"db_id\":\"LCA-001或空字串\",\"supplier\":\"供應商名稱\",\"cost_per_kg\":0,\"reason\":\"選用理由（10字內）\"}\n"
     +"  ]\n"
     +"}\n\n"
-    +"src 必須是：原料庫、樣品登記、通用 三選一。rows 依相別 A→B→C→D 排列。";
+    +"src 必須是：原料庫、樣品登記、通用 三選一。rows 依相別 A→B→C→D 排列。\n"
+    +"supplier 填原料供應商名稱（從原料庫 sup 欄位取得或標示品牌商）。\n"
+    +"cost_per_kg 填每公斤原料成本（新台幣，若不知填 0）。";
 
   // ── 先找相似配方 ──
   var similarList = findSimilarFormulas(ptype, effects);
